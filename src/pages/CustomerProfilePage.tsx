@@ -2,10 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase, Customer, Order, OrderItem, Product, CustomerCallHistory } from '@/lib/supabase';
 import { useLocation, useNavigate } from '@/lib/router';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  ArrowLeft, Phone, MapPin, Trash2, RotateCcw,
-  PlusCircle, MessageSquare, Edit3, History, User, X
-} from 'lucide-react';
+import { ArrowLeft, Phone, MapPin, Trash2, RotateCcw, PlusCircle, MessageSquare, CreditCard as Edit3, History, User, X } from 'lucide-react';
 import Badge from '@/components/Badge';
 import Modal from '@/components/Modal';
 
