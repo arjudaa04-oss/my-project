@@ -14,6 +14,8 @@ const STATUS_COLORS: Record<string, 'cyan' | 'amber' | 'blue' | 'red' | 'emerald
 };
 const ALL_STATUSES = ['all', 'call_me', 'not_now', 'pending', 'unreachable', 'ordered'];
 
+const PAGE_SIZE = 1000;
+
 export default function CustomerListPage() {
   const navigate = useNavigate();
   const { isAdmin } = useAuth();
@@ -32,29 +34,50 @@ export default function CustomerListPage() {
 
   useEffect(() => {
     loadCustomers();
-    // Real-time: refresh list AND counts whenever customers table changes
     const channel = supabase.channel('customers-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => {
         loadCustomers();
-        loadCounts();
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [filter]);
 
   async function loadCounts() {
-    const { data: all } = await supabase.from('customers').select('status');
-    const c: Record<string, number> = { all: (all ?? []).length };
-    ALL_STATUSES.slice(1).forEach(s => { c[s] = (all ?? []).filter((x: { status: string }) => x.status === s).length; });
+    const c: Record<string, number> = { all: 0 };
+    const { count: totalCount } = await supabase
+      .from('customers')
+      .select('*', { count: 'exact', head: true });
+    c.all = totalCount ?? 0;
+    const statusCounts = await Promise.all(
+      ALL_STATUSES.slice(1).map(async s => {
+        const { count } = await supabase
+          .from('customers')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', s);
+        return [s, count ?? 0] as const;
+      })
+    );
+    statusCounts.forEach(([s, n]) => { c[s] = n; });
     setCounts(c);
   }
 
   async function loadCustomers() {
     setLoading(true);
-    let q = supabase.from('customers').select('*').order('created_at', { ascending: false });
-    if (filter !== 'all') q = q.eq('status', filter);
-    const { data } = await q;
-    setCustomers((data as Customer[]) ?? []);
+    const allCustomers: Customer[] = [];
+    let from = 0;
+    while (true) {
+      let q = supabase.from('customers')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1);
+      if (filter !== 'all') q = q.eq('status', filter);
+      const { data } = await q;
+      if (!data || data.length === 0) break;
+      allCustomers.push(...(data as Customer[]));
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    setCustomers(allCustomers);
     await loadCounts();
     setLoading(false);
   }
@@ -81,7 +104,6 @@ export default function CustomerListPage() {
     setImportMsg('Processing...');
     const text = await file.text();
     const lines = text.split('\n').filter(l => l.trim());
-    // Skip header row if it looks like one
     const firstLine = lines[0]?.toLowerCase() ?? '';
     const hasHeader = firstLine.includes('name') || firstLine.includes('phone');
     const dataLines = hasHeader ? lines.slice(1) : lines;
@@ -103,22 +125,31 @@ export default function CustomerListPage() {
       return;
     }
 
-    // Insert in batches of 500 to handle unlimited rows
     const BATCH = 500;
     let inserted = 0;
+    let failed = 0;
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
       const { error } = await supabase.from('customers').insert(batch);
-      if (!error) inserted += batch.length;
-      setImportMsg(`Imported ${inserted} of ${rows.length}...`);
+      if (!error) {
+        inserted += batch.length;
+      } else {
+        failed += batch.length;
+      }
+      setImportMsg(`Importing... ${inserted + failed} of ${rows.length} processed`);
     }
 
     setImporting(false);
-    setImportMsg(`Successfully imported ${inserted} customers!`);
+    if (failed > 0) {
+      setImportMsg(`Imported ${inserted} customers. ${failed} rows failed.`);
+    } else {
+      setImportMsg(`Successfully imported all ${inserted} customers!`);
+    }
+    await loadCustomers();
     setTimeout(() => {
       setImportModal(false);
       setImportMsg('');
-    }, 1500);
+    }, 2500);
     if (fileRef.current) fileRef.current.value = '';
   }
 

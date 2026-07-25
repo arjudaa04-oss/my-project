@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { supabase, Order } from '@/lib/supabase';
-import { Truck, Search, Package2, RotateCcw, CheckCircle2, Building2 } from 'lucide-react';
+import { Truck, Search, Package2, RotateCcw, CheckCircle2, Building2, XCircle } from 'lucide-react';
 
 interface CompanyStat {
   company: string;
@@ -10,6 +10,8 @@ interface CompanyStat {
   cancelled: number;
   successRate: number;
 }
+
+const PAGE_SIZE = 1000;
 
 export default function CourierHistoryPage() {
   const [phone, setPhone] = useState('');
@@ -28,20 +30,32 @@ export default function CourierHistoryPage() {
       setLoading(false);
       return;
     }
-    const { data } = await supabase
-      .from('orders')
-      .select('*, customers(name, phone), order_items(*)')
-      .in('customer_id', ids)
-      .order('created_at', { ascending: false });
-    setOrders((data ?? []) as (Order & { customers?: { name: string; phone: string } })[]);
+
+    const allOrders: (Order & { customers?: { name: string; phone: string } })[] = [];
+    let from = 0;
+    while (ids.length > 0) {
+      const { data } = await supabase
+        .from('orders')
+        .select('*, customers(name, phone), order_items(*)')
+        .in('customer_id', ids)
+        .order('created_at', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1);
+      if (!data || data.length === 0) break;
+      allOrders.push(...(data as (Order & { customers?: { name: string; phone: string } })[]));
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    setOrders(allOrders);
     setLoading(false);
   }
 
   const delivered = orders.filter(o => o.status === 'delivered').length;
   const returned  = orders.filter(o => o.status === 'returned').length;
+  const cancelled = orders.filter(o => o.status === 'cancelled').length;
   const total     = orders.length;
   const successRate = total > 0 ? Math.round((delivered / total) * 100) : 0;
   const returnRate  = total > 0 ? Math.round((returned / total) * 100) : 0;
+  const cancelRate  = total > 0 ? Math.round((cancelled / total) * 100) : 0;
 
   // Company-wise breakdown
   const companyMap: Record<string, CompanyStat> = {};
@@ -58,9 +72,9 @@ export default function CourierHistoryPage() {
     return c;
   }).sort((a, b) => b.total - a.total);
 
-  // Overall average success/cancel ratio
-  const overallSuccess = companyStats.length > 0 ? Math.round(companyStats.reduce((s, c) => s + c.successRate, 0) / companyStats.length) : 0;
-  const overallCancel  = 100 - overallSuccess;
+  // Overall success/cancel ratio — computed from actual totals, not averaged per-company rates
+  const overallSuccess = total > 0 ? Math.round((delivered / total) * 100) : 0;
+  const overallCancel  = total > 0 ? Math.round(((returned + cancelled) / total) * 100) : 0;
 
   return (
     <div className="p-6 space-y-6">
@@ -89,7 +103,7 @@ export default function CourierHistoryPage() {
       {searched && !loading && orders.length > 0 && (
         <>
           {/* Overall stats */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="bg-slate-900 border border-white/5 rounded-2xl p-5">
               <p className="text-slate-400 text-sm">Total Orders</p>
               <p className="text-2xl font-bold text-white mt-1">{total}</p>
@@ -103,9 +117,13 @@ export default function CourierHistoryPage() {
               <p className="text-2xl font-bold text-red-400 mt-1">{returned}</p>
             </div>
             <div className="bg-slate-900 border border-white/5 rounded-2xl p-5">
+              <p className="text-slate-400 text-sm">Cancelled</p>
+              <p className="text-2xl font-bold text-amber-400 mt-1">{cancelled}</p>
+            </div>
+            <div className="bg-slate-900 border border-white/5 rounded-2xl p-5">
               <p className="text-slate-400 text-sm">Success Rate</p>
               <p className="text-2xl font-bold text-emerald-400 mt-1">{successRate}%</p>
-              <p className="text-slate-500 text-xs mt-0.5">Return: {returnRate}%</p>
+              <p className="text-slate-500 text-xs mt-0.5">Return: {returnRate}% · Cancel: {cancelRate}%</p>
             </div>
           </div>
 
@@ -116,39 +134,44 @@ export default function CourierHistoryPage() {
                 <Building2 className="w-5 h-5 text-emerald-400" /> Company-wise Breakdown
               </h2>
               <div className="bg-slate-900 border border-white/5 rounded-2xl overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-white/5 bg-slate-800/30">
-                      <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Courier Company</th>
-                      <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Total</th>
-                      <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Delivered</th>
-                      <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Returned</th>
-                      <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Success %</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {companyStats.map(c => (
-                      <tr key={c.company} className="hover:bg-white/2 transition-colors">
-                        <td className="px-5 py-3 text-white text-sm font-medium">{c.company}</td>
-                        <td className="px-5 py-3 text-slate-300 text-sm text-right">{c.total}</td>
-                        <td className="px-5 py-3 text-blue-400 text-sm text-right">{c.delivered}</td>
-                        <td className="px-5 py-3 text-red-400 text-sm text-right">{c.returned}</td>
-                        <td className="px-5 py-3 text-emerald-400 text-sm text-right font-medium">{c.successRate}%</td>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-white/5 bg-slate-800/30">
+                        <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Courier Company</th>
+                        <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Total</th>
+                        <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Delivered</th>
+                        <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Returned</th>
+                        <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Cancelled</th>
+                        <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Success %</th>
                       </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="border-t-2 border-emerald-500/20 bg-emerald-500/5">
-                      <td className="px-5 py-3 text-emerald-400 text-sm font-bold">OVERALL AVERAGE</td>
-                      <td className="px-5 py-3 text-white text-sm text-right font-bold">{total}</td>
-                      <td className="px-5 py-3 text-white text-sm text-right font-bold">{delivered}</td>
-                      <td className="px-5 py-3 text-white text-sm text-right font-bold">{returned}</td>
-                      <td className="px-5 py-3 text-emerald-400 text-sm text-right font-bold">
-                        {overallSuccess}% success · {overallCancel}% cancel
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {companyStats.map(c => (
+                        <tr key={c.company} className="hover:bg-white/2 transition-colors">
+                          <td className="px-5 py-3 text-white text-sm font-medium">{c.company}</td>
+                          <td className="px-5 py-3 text-slate-300 text-sm text-right">{c.total}</td>
+                          <td className="px-5 py-3 text-blue-400 text-sm text-right">{c.delivered}</td>
+                          <td className="px-5 py-3 text-red-400 text-sm text-right">{c.returned}</td>
+                          <td className="px-5 py-3 text-amber-400 text-sm text-right">{c.cancelled}</td>
+                          <td className="px-5 py-3 text-emerald-400 text-sm text-right font-medium">{c.successRate}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-t-2 border-emerald-500/20 bg-emerald-500/5">
+                        <td className="px-5 py-3 text-emerald-400 text-sm font-bold">OVERALL TOTAL</td>
+                        <td className="px-5 py-3 text-white text-sm text-right font-bold">{total}</td>
+                        <td className="px-5 py-3 text-white text-sm text-right font-bold">{delivered}</td>
+                        <td className="px-5 py-3 text-white text-sm text-right font-bold">{returned}</td>
+                        <td className="px-5 py-3 text-white text-sm text-right font-bold">{cancelled}</td>
+                        <td className="px-5 py-3 text-emerald-400 text-sm text-right font-bold">
+                          {overallSuccess}% success · {overallCancel}% cancel
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
               </div>
             </div>
           )}
@@ -168,49 +191,53 @@ export default function CourierHistoryPage() {
           </div>
         ) : (
           <div className="bg-slate-900 border border-white/5 rounded-2xl overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-white/5 bg-slate-800/30">
-                  <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Customer</th>
-                  <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Products</th>
-                  <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Amount</th>
-                  <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Courier</th>
-                  <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Tracking</th>
-                  <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Status</th>
-                  <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Date</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {orders.map(o => (
-                  <tr key={o.id} className="hover:bg-white/2 transition-colors">
-                    <td className="px-5 py-3">
-                      <p className="text-white text-sm font-medium">{o.customers?.name ?? '-'}</p>
-                      <p className="text-slate-500 text-xs">{o.customers?.phone ?? '-'}</p>
-                    </td>
-                    <td className="px-5 py-3 text-slate-300 text-xs">
-                      {(o.order_items ?? []).map((i: { product_name: string }) => i.product_name).join(', ') || '-'}
-                    </td>
-                    <td className="px-5 py-3 text-emerald-400 text-sm text-right font-medium">৳{o.total_amount.toLocaleString()}</td>
-                    <td className="px-5 py-3 text-slate-400 text-sm">{o.courier_company || o.courier_name || '-'}</td>
-                    <td className="px-5 py-3 text-slate-400 text-sm font-mono text-xs">{o.courier_tracking_id || '-'}</td>
-                    <td className="px-5 py-3">
-                      <span className={`flex items-center gap-1 text-xs font-medium ${
-                        o.status === 'delivered' ? 'text-blue-400' :
-                        o.status === 'returned'  ? 'text-red-400' :
-                        o.status === 'confirmed' ? 'text-emerald-400' :
-                        'text-slate-400'
-                      }`}>
-                        {o.status === 'delivered' && <CheckCircle2 className="w-3.5 h-3.5" />}
-                        {o.status === 'returned'  && <RotateCcw className="w-3.5 h-3.5" />}
-                        {o.status === 'confirmed' && <Package2 className="w-3.5 h-3.5" />}
-                        {o.status}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3 text-slate-500 text-xs">{new Date(o.created_at).toLocaleDateString()}</td>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-white/5 bg-slate-800/30">
+                    <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Customer</th>
+                    <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Products</th>
+                    <th className="text-right text-slate-400 text-xs font-medium px-5 py-3">Amount</th>
+                    <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Courier</th>
+                    <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Tracking</th>
+                    <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Status</th>
+                    <th className="text-left text-slate-400 text-xs font-medium px-5 py-3">Date</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {orders.map(o => (
+                    <tr key={o.id} className="hover:bg-white/2 transition-colors">
+                      <td className="px-5 py-3">
+                        <p className="text-white text-sm font-medium">{o.customers?.name ?? '-'}</p>
+                        <p className="text-slate-500 text-xs">{o.customers?.phone ?? '-'}</p>
+                      </td>
+                      <td className="px-5 py-3 text-slate-300 text-xs">
+                        {(o.order_items ?? []).map((i: { product_name: string }) => i.product_name).join(', ') || '-'}
+                      </td>
+                      <td className="px-5 py-3 text-emerald-400 text-sm text-right font-medium">৳{o.total_amount.toLocaleString()}</td>
+                      <td className="px-5 py-3 text-slate-400 text-sm">{o.courier_company || o.courier_name || '-'}</td>
+                      <td className="px-5 py-3 text-slate-400 text-sm font-mono text-xs">{o.courier_tracking_id || '-'}</td>
+                      <td className="px-5 py-3">
+                        <span className={`flex items-center gap-1 text-xs font-medium ${
+                          o.status === 'delivered' ? 'text-blue-400' :
+                          o.status === 'returned'  ? 'text-red-400' :
+                          o.status === 'cancelled' ? 'text-amber-400' :
+                          o.status === 'confirmed' ? 'text-emerald-400' :
+                          'text-slate-400'
+                        }`}>
+                          {o.status === 'delivered' && <CheckCircle2 className="w-3.5 h-3.5" />}
+                          {o.status === 'returned'  && <RotateCcw className="w-3.5 h-3.5" />}
+                          {o.status === 'cancelled' && <XCircle className="w-3.5 h-3.5" />}
+                          {o.status === 'confirmed' && <Package2 className="w-3.5 h-3.5" />}
+                          {o.status}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-slate-500 text-xs">{new Date(o.created_at).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )
       )}

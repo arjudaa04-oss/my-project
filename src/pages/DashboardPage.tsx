@@ -52,26 +52,47 @@ export default function DashboardPage() {
     const from = `${year}-${String(month).padStart(2,'0')}-01`;
     const to   = `${year}-${String(month).padStart(2,'0')}-31`;
 
-    const [ordersRes, targetRes, returnedRes] = await Promise.all([
-      supabase.from('orders')
+    // Paginate orders in chunks of 1000 to bypass Supabase's default row cap
+    const allOrders: Order[] = [];
+    let oFrom = 0;
+    while (true) {
+      const { data: page } = await supabase.from('orders')
         .select('*, order_items(*)')
         .gte('created_at', from)
         .lte('created_at', to + 'T23:59:59')
-        .in('status', ['confirmed','delivered']),
-      supabase.from('monthly_targets')
-        .select('*')
-        .eq('year', year)
-        .eq('month', month)
-        .maybeSingle(),
-      supabase.from('returned_parcels')
+        .in('status', ['confirmed','delivered'])
+        .order('created_at', { ascending: false })
+        .range(oFrom, oFrom + 999);
+      if (!page || page.length === 0) break;
+      allOrders.push(...(page as Order[]));
+      if (page.length < 1000) break;
+      oFrom += 1000;
+    }
+
+    const allReturned: ReturnedParcel[] = [];
+    let rFrom = 0;
+    while (true) {
+      const { data: rPage } = await supabase.from('returned_parcels')
         .select('*')
         .gte('returned_at', from)
-        .lte('returned_at', to + 'T23:59:59'),
-    ]);
+        .lte('returned_at', to + 'T23:59:59')
+        .order('returned_at', { ascending: false })
+        .range(rFrom, rFrom + 999);
+      if (!rPage || rPage.length === 0) break;
+      allReturned.push(...(rPage as ReturnedParcel[]));
+      if (rPage.length < 1000) break;
+      rFrom += 1000;
+    }
 
-    setOrders((ordersRes.data as Order[]) ?? []);
+    const targetRes = await supabase.from('monthly_targets')
+      .select('*')
+      .eq('year', year)
+      .eq('month', month)
+      .maybeSingle();
+
+    setOrders(allOrders);
     setTarget(targetRes.data);
-    setReturned((returnedRes.data as ReturnedParcel[]) ?? []);
+    setReturned(allReturned);
     if (targetRes.data) {
       setTargetKg(String(targetRes.data.target_kg));
       setTargetAmount(String(targetRes.data.target_amount));
